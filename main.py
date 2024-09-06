@@ -1,92 +1,105 @@
-import asyncio, asyncpg, random, decouple
-from asyncpg import Connection, Pool, Record
-from typing import Coroutine, Any
-from util import async_timed
+import os, pathlib, time, functools, asyncio
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing.sharedctypes import Value
+from multiprocessing.sharedctypes import Synchronized
+from typing import Generator
 
 
-async def init_db(database: str) -> Connection:
-    print(f'DB: {database}. Connecting...')
-    connection: Connection = await asyncpg.connect(database=database, host='127.0.0.1', port=5432, user='postgres', password=decouple.config('DB_PASSWORD'))
-    print(f'DB: {database}. Connected.')
+def delete_file():
+    os.remove(path=pathlib.Path(__file__).resolve().parent / 'digits.txt')
 
-    queries = {
-        1: 'CREATE TABLE IF NOT EXISTS brand (brand_id serial PRIMARY KEY, brand_name text NOT NULL);',
-        2: 'CREATE TABLE IF NOT EXISTS product (product_id serial PRIMARY KEY, product_name text NOT NULL, brand_id int NOT NULL, FOREIGN KEY (brand_id) REFERENCES brand(brand_id));',
-        3: 'CREATE TABLE IF NOT EXISTS product_color (product_color_id serial PRIMARY KEY, product_color_name text NOT NULL);',
-        4: 'CREATE TABLE IF NOT EXISTS product_size (product_size_id serial PRIMARY KEY, product_size_name text NOT NULL);',
-        5: 'CREATE TABLE IF NOT EXISTS sku (sku_id serial PRIMARY KEY, product_id int NOT NULL, product_size_id int NOT NULL, product_color_id int NOT NULL, FOREIGN KEY (product_id) REFERENCES product(product_id), FOREIGN KEY (product_size_id) REFERENCES product_size(product_size_id), FOREIGN KEY (product_color_id) REFERENCES product_color(product_color_id));',
-    }
-
-    async with connection.transaction():
-        keys = list(queries.keys()); keys.sort()
-        for key in keys:
-            result = await connection.execute(query=queries[key])
-            print(f'{key}. {result}')
-        try:
-            async with connection.transaction():
-                print(await connection.execute(query='INSERT INTO product_color VALUES (1, \'Blue\'), (2, \'Black\');'))
-                print(await connection.execute(query='INSERT INTO product_size VALUES (1, \'Small\'), (2, \'Medium\'), (3, \'Large\');'))
-        except: pass
-
-    print(f'DB: {database}. Initialized.')
-    return connection
-
-async def clear_db(connection: Connection) -> None:
-    for table in ['brand', 'product', 'product_color', 'product_size', 'sku']:
-        print(await connection.execute(query=f'DROP TABLE {table} CASCADE;'))
-
-async def insert_brands(connection: Connection) -> Coroutine[Any, Any, Any]:
-    with open(file='common_words.txt') as file:
-        words = file.readlines()
-        brands = [(index, words[index].replace('\n', '')) for index in range(1, 101)]
-        return await connection.executemany(command='INSERT INTO brand (brand_id, brand_name) VALUES ($1, $2);', args=brands)
-
-async def insert_products(connection: Connection) -> Coroutine[Any, Any, Any]:
-    with open(file='common_words.txt') as file:
-        words = file.readlines()
-        products = [(index, words[index + 100].replace('\n', ''), random.randint(1, 100)) for index in range(1, 1001)]
-        return await connection.executemany(command='INSERT INTO product (product_id, product_name, brand_id) VALUES ($1, $2, $3);', args=products)
-    
-async def insert_skus(connection: Connection) -> Coroutine[Any, Any, Any]:
-    skus = [(random.randint(1, 1000), random.randint(1, 3), random.randint(1, 2)) for _ in range(100000)]
-    await connection.executemany(command='INSERT INTO sku (product_id, product_size_id, product_color_id) VALUES ($1, $2, $3);', args=skus)
-
-async def query_products(pool: Pool):
-    async with pool.acquire() as connection:
-        connection: Connection
-        return await connection.fetchrow(query='SELECT p.product_id, p.product_name, p.brand_id, s.sku_id, pc.product_color_name, ps.product_size_name FROM product AS p JOIN sku AS s ON s.product_id = p.product_id JOIN product_color AS pc ON pc.product_color_id = s.product_color_id JOIN product_size AS ps ON ps.product_size_id = s.product_size_id WHERE p.product_id = 100;')
-    
-@async_timed()
-async def query_products_sync(pool: Pool, queries):
-    return [await query_products(pool=pool) for _ in range(queries)]
-
-@async_timed()
-async def query_products_async(pool: Pool, queries):
-    queries = [query_products(pool=pool) for _ in range(queries)]
-    return await asyncio.gather(*queries)
-
-async def main() -> None:
-    connection = await init_db(database='products')
-
+def create_file(number_of_rows: int) -> None:
     try:
-        async with connection.transaction():
-            print(await insert_brands(connection=connection))
-            print(await insert_products(connection=connection))
-            print(await insert_skus(connection=connection))
+        with open(file='digits.txt', mode='x') as file:
+            rows = [f'{row}\t{row}\t{row}\t{row}\n' for row in range(1, number_of_rows + 1)]
+            file.writelines(rows)
+    except FileExistsError:
+        delete_file()
+        create_file(number_of_rows=number_of_rows)
 
-            # print(await connection.fetch(query='SELECT p.product_id, p.product_name, p.brand_id, s.sku_id, pc.product_color_name, ps.product_size_name FROM product AS p JOIN sku AS s ON s.product_id = p.product_id JOIN product_color AS pc ON pc.product_color_id = s.product_color_id JOIN product_size AS ps ON ps.product_size_id = s.product_size_id WHERE p.product_id = 100;'))
+map_progress: Synchronized
 
-            async for _ in connection.cursor(query='SELECT * FROM product;'):
-                print(_)
-    except: await clear_db(connection=connection)
-    finally: await connection.close()
+def init(progress: Synchronized) -> None:
+    global map_progress
+    map_progress = progress
 
-async def main_loop() -> None:
-    async with asyncpg.create_pool(database='products', host='127.0.0.1', port=5432, user='postgres', password=decouple.config('DB_PASSWORD'), min_size=6, max_size=6) as pool:
-        # await asyncio.gather(query_products(pool=pool), query_products(pool=pool))
-        await query_products_sync(pool=pool, queries=10000)
-        await query_products_async(pool=pool, queries=10000)
+def partition(data: list[str], chunk_size: int) -> Generator:
+    for _ in range(0, len(data), chunk_size): yield data[_ : _ + chunk_size]
+
+def map_frequencies(chunk: list[str]) -> dict[str, int]:
+    counter = dict()
+    for line in chunk:
+        word, _, count, _ = line.replace('\n', '').split('\t')
+        if counter.get(word):
+            counter[word] = counter[word] + int(count)
+        else:
+            counter[word] = int(count)
+
+    with map_progress.get_lock():
+        map_progress.value += 1
+
+    return counter
+
+def progress_reporter(total_partitions: int) -> None:
+    while map_progress.value < total_partitions:
+        print(f'Finished: {map_progress.value}/{total_partitions}')
+        time.sleep(1)
+    print(f'Finished: {map_progress.value}/{total_partitions}')
+
+# async def progress_reporter(total_partitions: int) -> None:
+#     while map_progress.value < total_partitions:
+#         print(f'Finished: {map_progress.value}/{total_partitions}')
+#         await asyncio.sleep(1)
+#     print(f'Finished: {map_progress.value}/{total_partitions}')
+
+def merge_dicts(first: dict[str, int], second: dict[str, int]) -> dict[str, int]:
+    merge = first
+    for key in second:
+        if key in merge:
+            merge[key] = merge[key] + second[key]
+        else:
+            merge[key] = second[key]
+    return merge
+
+async def main(partition_size: int) -> None:
+    create_file(number_of_rows=10000000)
+    
+    global map_progress
+
+    with open(file='digits.txt') as file:
+        contents = file.readlines()
+
+        map_progress = Value('i', 0)
+        tasks = list()
+        loop = asyncio.get_running_loop()
+
+        start = time.time()
+
+        with ProcessPoolExecutor(initializer=init, initargs=(map_progress, )) as pool:
+            total_partitions = len(contents) // partition_size
+
+            tasks.append(loop.run_in_executor(executor=pool, func=functools.partial(progress_reporter, total_partitions)))
+
+            # reporter = asyncio.create_task(coro=progress_reporter(total_partitions=total_partitions))
+            
+            for chunk in partition(data=contents, chunk_size=partition_size): tasks.append(loop.run_in_executor(executor=pool, func=functools.partial(map_frequencies, chunk)))
+
+        counters = await asyncio.gather(*tasks)
+        
+        counters.pop(counters.index(None))
+
+        # await reporter
+
+        final_result = functools.reduce(merge_dicts, counters)
+
+        print('60: {}'.format(final_result['60']))
+
+        end = time.time()
+
+        print(f'{end - start:.3f}')
+    
+    # delete_file()
 
 
 if __name__ == '__main__':
-    asyncio.run(main=main())
+    asyncio.run(main=main(partition_size=500000))
