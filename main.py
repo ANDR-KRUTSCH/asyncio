@@ -1,21 +1,39 @@
-import asyncio, requests, time
+import asyncio, requests
+from threading import Lock
+from util import async_timed
 
 
-async def main() -> None:
-    loop = asyncio.get_running_loop(); tasks = list()
+counter_lock = Lock()
+counter = 0
 
-    start = time.time()
+def get_status_code(url: str) -> int:
+    global counter
 
-    for _ in range(10): tasks.append(asyncio.to_thread(lambda url: requests.get(url=url).status_code, 'https://www.example.com'))
+    response = requests.get(url=url)
+
+    with counter_lock:
+        counter += 1
+
+    return response.status_code
+
+async def reporter(requests_count: int) -> None:
+    while counter < requests_count:
+        print(f'{counter}/{requests_count}')
+        await asyncio.sleep(0.5)
+
+@async_timed()
+async def main(requests_count: int) -> None:
+    loop = asyncio.get_running_loop()
+    
+    tasks = [asyncio.to_thread(get_status_code, 'https://www.example.com') for _ in range(requests_count)]
+    reporter_task = asyncio.create_task(coro=reporter(requests_count=requests_count))
 
     result = await asyncio.gather(*tasks)
 
+    await reporter_task
+
     print(result)
-
-    end = time.time()
-
-    print(f'{end - start:.4f}')
 
 
 if __name__ == '__main__':
-    asyncio.run(main=main())
+    asyncio.run(main=main(requests_count=200))
