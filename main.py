@@ -1,25 +1,35 @@
-import asyncio
-from asyncio import StreamReader
-from typing import AsyncGenerator
+import asyncio, os, tty, sys
+from collections import deque as Deque
+from util import MessageStore, reader, select_last_line, select_first_line, clear_selected_line, create_stdin_reader
 
 
-async def read_until_empty(stream_reader: StreamReader) -> AsyncGenerator[str, None]:
-    while response := await stream_reader.readline():
-        yield response.decode()
+async def main() -> None:
+    os.system(command='clear')
+    tty.setcbreak(fd=sys.stdin.fileno())
 
-async def main():
-    stream_reader, stream_writer = await asyncio.open_connection(host='www.example.com', port=80)
+    max_size = select_last_line()
 
-    try:
-        stream_writer.write(data='GET / HTTP/1.1\r\nConnection: close\r\nHost www.example.com\r\n\r\n'.encode())
-        await stream_writer.drain()
+    async def sleep(delay: int, message_store: MessageStore) -> None:
+        await message_store.append(message=f'Sleeping for {delay} second(s) started...')
+        await asyncio.sleep(delay=delay)
+        await message_store.append(message=f'Sleeping for {delay} second(s) finished.')
 
-        responses = [response async for response in read_until_empty(stream_reader=stream_reader)]
+    async def update_stdout(deque: Deque) -> None:
+        select_first_line(max_size=max_size)
 
-        print(''.join(responses))
-    finally:
-        stream_writer.close()
-        await stream_writer.wait_closed()
+        for message in deque:
+            print(message)
+
+        select_last_line()
+        clear_selected_line()
+
+    message_store = MessageStore(callback=update_stdout, max_size=max_size)
+
+    stdin_reader = await create_stdin_reader()
+
+    while True:
+        delay = await reader(stdin_reader=stdin_reader)
+        asyncio.create_task(coro=sleep(delay=delay, message_store=message_store))
 
 
 if __name__ == '__main__':
