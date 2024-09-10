@@ -58,9 +58,9 @@ async def reader(stdin_reader: StreamReader) -> int:
         if key == b'\n':
             if len(buffer) == 0: raise ValueError()
             else:
-                try: result = int(b''.join(buffer))
+                try: result = b''.join(buffer) # int(b''.join(buffer))
                 except: raise ValueError()
-                else: return result
+                else: return result.decode() # return result
                 finally: buffer.clear()
         else:
             if key == BACKSPACE: backspace()
