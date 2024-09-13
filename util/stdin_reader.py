@@ -49,7 +49,7 @@ def backspace() -> None:
     result = b''.join(buffer)
     sys.stdout.write(result.decode()); sys.stdout.flush()
 
-async def reader(stdin_reader: StreamReader) -> int:
+async def read(stdin_reader: StreamReader) -> str:
     '''This method processes the user's input in the CMD.'''
 
     while True:
