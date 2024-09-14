@@ -1,24 +1,33 @@
-import asyncpg, decouple, starlette
+import asyncio
+from starlette.endpoints import WebSocketEndpoint
+from starlette.websockets import WebSocket
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
-from starlette.routing import Route
+from starlette.routing import WebSocketRoute
+from typing import Coroutine, Any
 
 
-async def create_db_pool() -> None:
-    pool: asyncpg.Pool = await asyncpg.create_pool(host='127.0.0.1', port=5432, database='products', user='postgres', password=decouple.config('DB_PASSWORD'), min_size=6, max_size=6)
-    app.state.DB = pool
+class UserCounter(WebSocketEndpoint):
+    encoding = 'text'
+    sockets: list[WebSocket] = list()
 
-async def destroy_db_pool() -> None:
-    pool: asyncpg.Pool = app.state.DB
-    await pool.close()
+    async def on_connect(self, websocket: WebSocket) -> Coroutine[Any, Any, None]:
+        await websocket.accept()
+        UserCounter.sockets.append(websocket)
+        await self._send_count()
+
+    async def on_disconnect(self, websocket: WebSocket, close_code: int) -> None:
+        UserCounter.sockets.remove(websocket)
+        await self._send_count()
+
+    async def on_receive(self, websocket: WebSocket, data: Any) -> None: pass
+
+    async def _send_count(self) -> None:
+        if len(UserCounter.sockets) > 0:
+            task_to_socket = {asyncio.create_task(coro=websocket.send_text(data=str(len(UserCounter.sockets)))): websocket for websocket in UserCounter.sockets}
+            done, _ = await asyncio.wait(fs=task_to_socket)
+            for task in done:
+                if task.exception() is not None:
+                    if task_to_socket[task] in UserCounter.sockets: UserCounter.sockets.remove(task_to_socket[task])
 
 
-async def brands(request: Request) -> Response:
-    pool: asyncpg.Pool = request.app.state.DB
-    results: list[asyncpg.Record] = await pool.fetch(query='SELECT brand_id, brand_name FROM brand;')
-    return JSONResponse(content=[dict(brand) for brand in results])
-
-
-
-app = Starlette(routes=[Route(path='/brands', endpoint=brands)], on_startup=[create_db_pool], on_shutdown=[destroy_db_pool])
+app = Starlette(routes=[WebSocketRoute(path='/counter', endpoint=UserCounter)])
