@@ -1,66 +1,49 @@
 import asyncio, random
+from aiohttp.web import Application, run_app, RouteTableDef, Request, Response
 
 
-class Product:
-
-    def __init__(self, name: str, checkout_time: float) -> None:
-        self.name = name
-        self.checkout_time = checkout_time
+routes = RouteTableDef()
 
 
-class Customer:
+@routes.get(path='/order')
+async def place_order(request: Request) -> Response:
+    queue_order: asyncio.Queue = request.app['queue_order']
+    await queue_order.put(item=random.randrange(5))
+    return Response(body='Order placed!')
 
-    def __init__(self, id, products: list[Product]) -> None:
-        self.id = id
-        self.products = products
 
-
-async def checkout_customer(queue: asyncio.Queue, id) -> None:
+async def order_processer(processer_id: int, queue: asyncio.Queue) -> None:
     while True:
-        customer: Customer = await queue.get()
-
-        print(f'Cashier({id}) - Customer({customer.id})')
-        for product in customer.products:
-            print(f'Cashier({id}) checkouts Customer({customer.id}): {product.name}')
-            await asyncio.sleep(delay=product.checkout_time)
-            print(f'Cashier({id}) finished checkouting Customer({customer.id})')
-        
+        print(f'Processer({processer_id}): waiting for the order...')
+        order: int = await queue.get()
+        print(f'Processer({processer_id}): processing the Order({order})...')
+        await asyncio.sleep(delay=order)
+        print(f'Processer({processer_id}): processed the Order({order}).')
         queue.task_done()
 
-def generate_customer(id: int) -> Customer:
-    products_all = [
-        Product(name='Milk', checkout_time=1),
-        Product(name='Coffee', checkout_time=2),
-        Product(name='Sugar', checkout_time=3),
-    ]
+async def create_queue_order(app: Application) -> None:
+    print('Creating of the order-queue and tasks...')
+    queue_order = asyncio.Queue(maxsize=10)
+    app['queue_order'] = queue_order
+    app['order_tasks'] = [asyncio.create_task(coro=order_processer(processer_id=id, queue=queue_order)) for id in range(5)]
 
-    products = [products_all[random.randrange(len(products_all))] for _ in range(random.randrange(10))]
-
-    return Customer(id=id, products=products)
-
-async def customer_generator(queue: asyncio.Queue) -> None:
-    total_customers = 0
-
-    while True:
-        customers = [generate_customer(id=id) for id in range(total_customers, total_customers + random.randrange(10))]
-
-        for customer in customers:
-            print('Waiting for adding the customer to the queue.')
-            await queue.put(customer)
-            print('The customer was added to the queue.')
-
-        total_customers + len(customers)
-        await asyncio.sleep(delay=1)
-
-async def main() -> None:
-    queue = asyncio.Queue(maxsize=5)
-
-    customer_producer = asyncio.create_task(coro=customer_generator(queue=queue))
-
-    cashiers = [asyncio.create_task(coro=checkout_customer(queue=queue, id=id)) for id in range(3)]
-
-    await asyncio.gather(customer_producer, *cashiers)
+async def destroy_queue_order(app: Application) -> None:
+    order_tasks: list[asyncio.Task] = app['order_tasks']
+    queue_order: asyncio.Queue = app['queue_order']
+    print('Waiting for the processers in the async queue...')
+    try:
+        await asyncio.wait_for(queue_order.join(), timeout=10)
+    finally:
+        print('All orders processed. Canceling of tasks...')
+        [task.cancel() for task in order_tasks]
 
 
 if __name__ == '__main__':
-    asyncio.run(main=main())
+    app = Application()
+
+    app.add_routes(routes=routes)
+
+    app.on_startup.append(create_queue_order)
+    app.on_cleanup.append(destroy_queue_order)
+
+    run_app(app=app)
