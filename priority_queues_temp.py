@@ -14,7 +14,7 @@ async def processer(queue: asyncio.Queue) -> None:
         queue.task_done()
 
 async def main() -> None:
-    priority_queue = asyncio.PriorityQueue()
+    lifo_queue = asyncio.LifoQueue()
 
     items = [
         Item(priority=3, order=1, data='Lowest 1'),
@@ -25,11 +25,11 @@ async def main() -> None:
     ]
 
     for item in items:
-        priority_queue.put_nowait(item=item)
+        lifo_queue.put_nowait(item=item)
 
-    processer_task = asyncio.create_task(coro=processer(queue=priority_queue))
+    processer_task = asyncio.create_task(coro=processer(queue=lifo_queue))
 
-    await asyncio.gather(priority_queue.join(), processer_task)
+    await asyncio.gather(lifo_queue.join(), processer_task)
 
 
 if __name__ == '__main__':
