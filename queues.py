@@ -1,49 +1,51 @@
-import asyncio, random
-from aiohttp.web import Application, run_app, RouteTableDef, Request, Response
+import asyncio, aiohttp, logging
+from bs4 import BeautifulSoup
 
 
-routes = RouteTableDef()
+class SourceProcesser:
+
+    def __init__(self, url: str, depth: int) -> None:
+        self.url = url
+        self.depth = depth
 
 
-@routes.get(path='/order')
-async def place_order(request: Request) -> Response:
-    queue_order: asyncio.Queue = request.app['queue_order']
-    await queue_order.put(item=random.randrange(5))
-    return Response(body='Order placed!')
-
-
-async def order_processer(processer_id: int, queue: asyncio.Queue) -> None:
+async def processer(id: int, queue: asyncio.Queue, session: aiohttp.ClientSession, max_depth: int) -> None:
+    print(f'Processer({id})')
     while True:
-        print(f'Processer({processer_id}): waiting for the order...')
-        order: int = await queue.get()
-        print(f'Processer({processer_id}): processing the Order({order})...')
-        await asyncio.sleep(delay=order)
-        print(f'Processer({processer_id}): processed the Order({order}).')
+        source_processer: SourceProcesser = await queue.get()
+        print(f'Processer({id}): processes url="{source_processer.url}"')
+        await process_source(source_processer=source_processer, queue=queue, session=session, max_depth=max_depth)
         queue.task_done()
 
-async def create_queue_order(app: Application) -> None:
-    print('Creating of the order-queue and tasks...')
-    queue_order = asyncio.Queue(maxsize=10)
-    app['queue_order'] = queue_order
-    app['order_tasks'] = [asyncio.create_task(coro=order_processer(processer_id=id, queue=queue_order)) for id in range(5)]
-
-async def destroy_queue_order(app: Application) -> None:
-    order_tasks: list[asyncio.Task] = app['order_tasks']
-    queue_order: asyncio.Queue = app['queue_order']
-    print('Waiting for the processers in the async queue...')
+async def process_source(source_processer: SourceProcesser, queue: asyncio.Queue, session: aiohttp.ClientSession, max_depth: int) -> None:
     try:
-        await asyncio.wait_for(queue_order.join(), timeout=10)
-    finally:
-        print('All orders processed. Canceling of tasks...')
-        [task.cancel() for task in order_tasks]
+        response = await session.get(url=source_processer.url, timeout=3)
+        if source_processer.depth == max_depth:
+            print(f'Max depth for url="{source_processer.url}"')
+        else:
+            body = await response.text()
+            
+            beautiful_soup = BeautifulSoup(markup=body, features='html.parser')
+            
+            links = beautiful_soup.find_all(name='a', href=True)
+            for link in links:
+                queue.put_nowait(SourceProcesser(url=link['href'], depth=source_processer.depth + 1))
+    except BaseException:
+        logging.exception(f'Error when processing url="{source_processer.url}"')
+
+
+async def main() -> None:
+    queue = asyncio.Queue()
+
+    queue.put_nowait(SourceProcesser(url='https://www.example.com', depth=0))
+
+    async with aiohttp.ClientSession() as session:
+        processers = [asyncio.create_task(coro=processer(id=id, queue=queue, session=session, max_depth=3)) for id in range(2)]
+
+        await queue.join()
+
+        [processer.cancel() for processer in processers]
 
 
 if __name__ == '__main__':
-    app = Application()
-
-    app.add_routes(routes=routes)
-
-    app.on_startup.append(create_queue_order)
-    app.on_cleanup.append(destroy_queue_order)
-
-    run_app(app=app)
+    asyncio.run(main=main())
