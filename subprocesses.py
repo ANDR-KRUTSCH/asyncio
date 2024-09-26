@@ -1,31 +1,18 @@
-import asyncio, random, string, os, time
+import asyncio
 from asyncio.subprocess import Process, PIPE
 
 
-async def encrypt(semaphore: asyncio.Semaphore, text: str) -> bytes:
-    programm = ['gpg', '-c', '--batch', '--passphrase', '3ncryptm3', '--cipher-algo', 'TWOFISH'] # gpg -c --batch --passphrase 3ncryptm3 --cipher-algo TWOFISH
-
-    async with semaphore:
-        process: Process = await asyncio.create_subprocess_exec(*programm, stdin=PIPE, stdout=PIPE)
-
-        stdout, stderr = await process.communicate(input=text.encode())
-
-        return stdout
+async def consume_and_send(texts: list[str], stdin: asyncio.StreamWriter, stdout: asyncio.StreamReader) -> None:
+    for text in texts:
+        print(await stdout.read(2048))
+        stdin.write(text.encode()); await stdin.drain()
 
 async def main() -> None:
-    texts = [''.join(random.choice(string.ascii_letters) for _ in range(1000)) for _ in range(1000)]
+    process: Process = await asyncio.create_subprocess_exec('python', 'programm.py', stdin=PIPE, stdout=PIPE)
 
-    semaphore = asyncio.Semaphore(value=os.cpu_count())
+    texts = ['one\n', 'two\n', 'three\n', 'quit\n']
 
-    start = time.time()
-
-    tasks = [asyncio.create_task(coro=encrypt(semaphore=semaphore, text=text)) for text in texts]
-
-    await asyncio.gather(*tasks)
-
-    end = time.time()
-
-    print(f'time: {end-start:.4f} second(s)')
+    await asyncio.gather(consume_and_send(texts=texts, stdout=process.stdout, stdin=process.stdin), process.wait())
 
 
 if __name__ == '__main__':
