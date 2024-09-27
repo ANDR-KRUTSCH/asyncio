@@ -1,42 +1,28 @@
-import asyncio, typing
+import asyncio, contextvars
 
 
-class TaskExecutor:
+class Server:
+    users: contextvars.ContextVar = contextvars.ContextVar('users')
 
-    def __init__(self) -> None:
-        self.event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-        self.tasks: list[typing.Coroutine | typing.Callable] = list()
+    def __init__(self, host: str, port: int) -> None:
+        self.host: str = host
+        self.port: int = port
 
-    def add_task(self, callback: typing.Coroutine | typing.Callable) -> None:
-        if not isinstance(callback, typing.Coroutine) and not isinstance(callback, typing.Callable): raise TypeError()
-        else: self.tasks.append(callback)
+    async def start_server(self) -> None:
+        server = await asyncio.start_server(client_connected_cb=self._client_connected, host=self.host, port=self.port)
+        await server.serve_forever()
 
-    async def _run(self) -> None:
-        awaitable_tasks: list[asyncio.Task] = list()
+    def _client_connected(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.users.set(writer.get_extra_info(name='peername'))
+        asyncio.create_task(coro=self.listen_for_messages(reader=reader))
 
-        for task in self.tasks:
-            if asyncio.iscoroutine(obj=task): awaitable_tasks.append(asyncio.create_task(coro=task))
-            elif asyncio.iscoroutinefunction(func=task): awaitable_tasks.append(asyncio.create_task(coro=task()))
-            else: self.event_loop.call_soon(callback=task)
+    async def listen_for_messages(self, reader: asyncio.StreamReader) -> None:
+        while data := await reader.readline(): print(f'{self.users.get()} -> {data}')
 
-        await asyncio.gather(*awaitable_tasks)
 
-    def run(self) -> None:
-        self.event_loop.run_until_complete(future=self._run())
+async def main() -> None:
+    await Server(host='127.0.0.1', port=8000).start_server()
 
 
 if __name__ == '__main__':
-    def func() -> None:
-        print('func')
-
-    async def coro() -> None:
-        await asyncio.sleep(delay=2)
-        print('coro')
-
-    task_executor = TaskExecutor()
-
-    task_executor.add_task(callback=coro())
-    task_executor.add_task(callback=coro)
-    task_executor.add_task(callback=func)
-
-    task_executor.run()
+    asyncio.run(main=main())
