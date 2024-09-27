@@ -1,29 +1,43 @@
 import typing
 
 
-def generator(start: int, end: int) -> typing.Generator:
-    if not isinstance(start, int) and not isinstance(end, int): raise TypeError()
-    if start < 0 or (end < 0 or end < start): raise ValueError()
+class CustomFuture:
+
+    def __init__(self) -> None:
+        self._result: typing.Any = None
+        self._is_finished: bool = False
+        self._done_callback: typing.Callable[[typing.Any], typing.Any] = None
+
+    def result(self) -> typing.Any:
+        return self._result
     
-    for _ in range(start, end):
-        yield _
+    def is_finished(self) -> bool:
+        return self._is_finished
+    
+    def set_result(self, result: typing.Any) -> None:
+        self._result = result
+        self._is_finished = True
+        if self._done_callback: self._done_callback(result)
+
+    def set_done_callback(self, callback: typing.Callable[[typing.Any], typing.Any]) -> None:
+        self._done_callback = callback
+
+    def __await__(self):
+        if self.is_finished(): return self.result()
+        else: yield self
 
 
-from_1_to_5 = generator(start=1, end=5)
-from_5_to_10 = generator(start=5, end=10)
+if __name__ == '__main__':
+    future = CustomFuture()
 
-def run_generator_step(generator: typing.Generator):
     try:
-        return generator.send(None)
+        for _ in range(1, 6):
+            print('Checking for the result of the future object.')
+            gen = future.__await__()
+            gen.send(None)
+            print('The future object does not have the result yet.')
+            if _ == 3:
+                print('Setting the result of the future object.')
+                future.set_result(result='result')
     except StopIteration as stop_iteration:
-        return stop_iteration.value
-
-while True:
-    from_1_to_5_result = run_generator_step(generator=from_1_to_5)
-    from_5_to_10_result = run_generator_step(generator=from_5_to_10)
-
-    print(from_1_to_5_result) if from_1_to_5_result is not None else ...
-    print(from_5_to_10_result) if from_5_to_10_result is not None else ...
-
-    if from_1_to_5_result is None and from_5_to_10_result is None:
-        break
+        print('The future object result:', stop_iteration.value)
